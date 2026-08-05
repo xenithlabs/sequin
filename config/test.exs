@@ -108,7 +108,8 @@ config :sequin,
     req_opts: [plug: {Req.Test, Sequin.Sinks.S2.Client}, compress_body: false]
   ],
   meilisearch: [
-    req_opts: [plug: {Req.Test, Sequin.Sinks.Meilisearch.Client}, compress_body: false]
+    req_opts: [plug: {Req.Test, Sequin.Sinks.Meilisearch.Client}, compress_body: false],
+    task_wait_timeout_ms: 1_500
   ],
   redis_module: Sequin.Sinks.RedisMock,
   kafka_module: Sequin.Sinks.KafkaMock,

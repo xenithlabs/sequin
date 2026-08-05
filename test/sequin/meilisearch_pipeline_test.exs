@@ -2,10 +2,13 @@ defmodule Sequin.Runtime.MeilisearchPipelineTest do
   use Sequin.DataCase, async: true
 
   alias Sequin.Consumers
+  alias Sequin.Consumers.MeilisearchSink
+  alias Sequin.Consumers.SinkConsumer
   alias Sequin.Factory.AccountsFactory
   alias Sequin.Factory.CharacterFactory
   alias Sequin.Factory.ConsumersFactory
   alias Sequin.Functions.MiniElixir
+  alias Sequin.Runtime.MeilisearchPipeline
   alias Sequin.Runtime.SinkPipeline
   alias Sequin.Sinks.Meilisearch.Client
 
@@ -15,6 +18,32 @@ defmodule Sequin.Runtime.MeilisearchPipelineTest do
     conn
     |> Plug.Conn.put_resp_header("content-encoding", "gzip")
     |> Plug.Conn.send_resp(status_code, gzipped_body)
+  end
+
+  describe "batchers_config/1" do
+    test "defaults batch_timeout to 1000ms when batch_timeout_ms is not set" do
+      consumer = %SinkConsumer{batch_timeout_ms: nil, sink: %MeilisearchSink{batch_size: 1000}}
+
+      assert MeilisearchPipeline.batchers_config(consumer)[:default][:batch_timeout] == 1000
+    end
+
+    test "honors the consumer's batch_timeout_ms when set" do
+      consumer = %SinkConsumer{batch_timeout_ms: 500, sink: %MeilisearchSink{batch_size: 1000}}
+
+      assert MeilisearchPipeline.batchers_config(consumer)[:default][:batch_timeout] == 500
+    end
+
+    test "defaults batcher concurrency to 24 (elevated, for Meilisearch auto-batching)" do
+      consumer = %SinkConsumer{batcher_concurrency: nil, batch_timeout_ms: nil, sink: %MeilisearchSink{batch_size: 1000}}
+
+      assert MeilisearchPipeline.batchers_config(consumer)[:default][:concurrency] == 24
+    end
+
+    test "honors the consumer's batcher_concurrency when set" do
+      consumer = %SinkConsumer{batcher_concurrency: 8, batch_timeout_ms: nil, sink: %MeilisearchSink{batch_size: 1000}}
+
+      assert MeilisearchPipeline.batchers_config(consumer)[:default][:concurrency] == 8
+    end
   end
 
   describe "meilisearch pipeline" do

@@ -16,13 +16,29 @@ defmodule Sequin.Runtime.MeilisearchPipeline do
 
   @impl SinkPipeline
   def batchers_config(consumer) do
-    concurrency = min(System.schedulers_online() * 2, 50)
+    # Meilisearch processes its task queue SERIALLY but AUTO-BATCHES consecutive compatible
+    # tasks into a single commit. The per-commit cost is large and nearly fixed regardless of
+    # size, so coalescing MORE tasks per commit = more docs per commit = higher throughput.
+    # We therefore run a healthy pool of batchers to keep many tasks enqueued for Meilisearch
+    # to coalesce. These are I/O-bound (they mostly wait on Meilisearch), so concurrency is
+    # not tied to CPU count. Bounded so that worst-case queue depth (concurrency * per-commit
+    # time) stays within wait_for_task's budget / ack_wait_ms — otherwise tasks would be
+    # nacked/redelivered. (Requires enough message-store headroom; the small-host memory
+    # deadlock that previously forced concurrency=4 was resolved by sizing the host.)
+    # Overridable per-consumer via batcher_concurrency (defaults to 24).
+    concurrency = consumer.batcher_concurrency || 24
 
     [
       default: [
         concurrency: concurrency,
         batch_size: consumer.sink.batch_size || 100,
-        batch_timeout: 5
+        # Default to 1000ms (vs Broadway's usual 5ms) so batches fill toward batch_size.
+        # Meilisearch's per-commit cost is large and nearly fixed regardless of batch
+        # size, so tiny batches are very slow — especially during backfills. During a
+        # backfill the batch usually reaches batch_size well before this timeout; for
+        # low-volume real-time CDC this adds up to ~1s of delivery latency.
+        # Still overridable per-consumer via batch_timeout_ms.
+        batch_timeout: consumer.batch_timeout_ms || 1000
       ]
     ]
   end

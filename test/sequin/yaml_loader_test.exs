@@ -845,6 +845,32 @@ defmodule Sequin.YamlLoaderTest do
       refute is_nil(consumer.source)
     end
 
+    test "sets batch_timeout_ms, max_memory_mb, and batcher_concurrency" do
+      assert :ok =
+               YamlLoader.apply_from_yml!("""
+               #{account_and_db_yml()}
+
+               http_endpoints:
+                 - name: "sequin-playground-http"
+                   url: "https://api.example.com/webhook"
+
+               sinks:
+                 - name: "sequin-playground-webhook"
+                   database: "test-db"
+                   destination:
+                     type: "webhook"
+                     http_endpoint: "sequin-playground-http"
+                   batch_timeout_ms: 2000
+                   max_memory_mb: 512
+                   batcher_concurrency: 8
+               """)
+
+      assert [consumer] = Repo.all(SinkConsumer)
+      assert consumer.batch_timeout_ms == 2000
+      assert consumer.max_memory_mb == 512
+      assert consumer.batcher_concurrency == 8
+    end
+
     test "creates webhook subscription with batch=false" do
       assert :ok =
                YamlLoader.apply_from_yml!("""

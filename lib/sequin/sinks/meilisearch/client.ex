@@ -19,57 +19,34 @@ defmodule Sequin.Sinks.Meilisearch.Client do
 
   defp decode_body(_), do: %{}
 
+  # Meilisearch's task queue is SERIAL, so a task may sit "enqueued" for a while behind
+  # others before it processes. We poll until it reaches a terminal state or this deadline,
+  # rather than abandoning a task that is still legitimately in flight (which caused
+  # "Task verification timed out" errors → nack → redeliver → no backfill progress).
+  # Kept under the consumer's ack_wait_ms (default 30s) so we confirm delivery before the
+  # message's visibility window expires. Set to 25s (under 30s) to tolerate deeper task
+  # queues when batcher concurrency is high. Overridable via config for tests.
+  @default_task_wait_timeout_ms 25_000
+  @task_poll_base_ms 100
+  @task_poll_max_ms 1_000
+
+  defp task_wait_timeout_ms do
+    Application.get_env(:sequin, :meilisearch, [])[:task_wait_timeout_ms] || @default_task_wait_timeout_ms
+  end
+
   defp wait_for_task(%MeilisearchSink{} = sink, task_id) do
+    wait_for_task(sink, task_id, 0, 0)
+  end
+
+  defp wait_for_task(%MeilisearchSink{} = sink, task_id, elapsed_ms, attempt) do
     req =
       sink
       |> base_request()
-      |> Req.merge(
-        url: "/tasks/#{task_id}",
-        # We need to disable this if we use a custom retry that emits delays
-        retry_delay: nil,
-        max_retries: 5,
-        retry: fn request, response_or_exception ->
-          should_retry =
-            case response_or_exception do
-              %Req.Response{status: 200, body: encoded_body} ->
-                # NOTE: Req does not automatically decode on retry functions
-                case encoded_body |> :zlib.gunzip() |> Jason.decode() do
-                  {:ok, %{"status" => status}} when status in ["enqueued", "processing"] ->
-                    true
-
-                  _ ->
-                    false
-                end
-
-              %Req.Response{status: status} when status in [408, 429, 500, 502, 503, 504] ->
-                true
-
-              %Req.TransportError{reason: reason} when reason in [:timeout, :econnrefused, :closed] ->
-                true
-
-              _ ->
-                false
-            end
-
-          if should_retry do
-            # Req tracks retry count internally via request.private[:req_retry_count]
-            count = request.private[:req_retry_count] || 0
-            delay = Sequin.Time.exponential_backoff(200, count, 10_000)
-
-            Logger.debug("[Meilisearch] Task #{task_id} has not succeeded, retrying in #{delay}ms (attempt #{count + 1})")
-
-            {:delay, delay}
-          else
-            false
-          end
-        end
-      )
+      |> Req.merge(url: "/tasks/#{task_id}", retry: false)
 
     case Req.get(req) do
       {:ok, %{body: body}} ->
-        decoded_body = decode_body(body)
-
-        case decoded_body do
+        case decode_body(body) do
           %{"status" => status} when status in ["succeeded", "success"] ->
             :ok
 
@@ -78,20 +55,39 @@ defmodule Sequin.Sinks.Meilisearch.Client do
             {:error, Error.service(service: :meilisearch, message: message, details: error)}
 
           %{"status" => status} when status in ["enqueued", "processing"] ->
-            # This means we exhausted retries
-            {:error,
-             Error.service(
-               service: :meilisearch,
-               message: "Task verification timed out",
-               details: %{task_id: task_id, last_status: status}
-             )}
+            maybe_poll_again(sink, task_id, elapsed_ms, attempt, status)
 
           _ ->
             {:error, Error.service(service: :meilisearch, message: "Invalid response format")}
         end
 
       {:error, reason} ->
-        {:error, Error.service(service: :meilisearch, message: "Unknown error", details: reason)}
+        # Transient transport error — keep polling within the deadline before giving up.
+        maybe_poll_again(sink, task_id, elapsed_ms, attempt, {:transport_error, reason})
+    end
+  end
+
+  defp maybe_poll_again(sink, task_id, elapsed_ms, attempt, last) do
+    if elapsed_ms >= task_wait_timeout_ms() do
+      case last do
+        {:transport_error, reason} ->
+          {:error, Error.service(service: :meilisearch, message: "Unknown error", details: reason)}
+
+        status ->
+          {:error,
+           Error.service(
+             service: :meilisearch,
+             message: "Task verification timed out",
+             details: %{task_id: task_id, last_status: status}
+           )}
+      end
+    else
+      delay = min(@task_poll_max_ms, trunc(@task_poll_base_ms * :math.pow(2, attempt)))
+
+      Logger.debug("[Meilisearch] Task #{task_id} not terminal (#{inspect(last)}), polling again in #{delay}ms")
+
+      Process.sleep(delay)
+      wait_for_task(sink, task_id, elapsed_ms + delay, attempt + 1)
     end
   end
 

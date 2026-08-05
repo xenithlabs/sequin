@@ -141,6 +141,28 @@
         <p class="text-destructive text-sm">{errors.sink.api_key}</p>
       {/if}
     </div>
+
+    <div class="space-y-2">
+      <Label for="batch_size">Batch size (documents per request)</Label>
+      <Input
+        id="batch_size"
+        type="number"
+        bind:value={form.sink.batch_size}
+        min="1"
+        max="10000"
+        placeholder="100"
+      />
+      {#if errors.sink?.batch_size}
+        <p class="text-destructive text-sm">{errors.sink.batch_size}</p>
+      {/if}
+      <p class="text-sm text-muted-foreground">
+        Number of documents sent to Meilisearch per request. This is the main
+        throughput lever for backfills — Meilisearch pays a large fixed cost per
+        commit, so larger batches amortize it (e.g. 100 → 10000 can be ~7× faster).
+        Max 10000. Raising it increases per-request payload size and memory use;
+        pair with a higher "Max memory (MB)" for large backfills.
+      </p>
+    </div>
   </CardContent>
 </Card>
 

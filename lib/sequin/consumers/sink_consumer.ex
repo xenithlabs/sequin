@@ -92,6 +92,7 @@ defmodule Sequin.Consumers.SinkConsumer do
     field :seq, :integer, read_after_writes: true
     field :batch_size, :integer, default: 1
     field :batch_timeout_ms, :integer, default: nil
+    field :batcher_concurrency, :integer, default: nil
     field :annotations, :map, default: %{}
     field :max_memory_mb, :integer, default: 128
     field :partition_count, :integer, default: 1
@@ -200,6 +201,7 @@ defmodule Sequin.Consumers.SinkConsumer do
       :enrichment_id,
       :timestamp_format,
       :batch_timeout_ms,
+      :batcher_concurrency,
       :load_shedding_policy,
       :message_grouping
     ])
@@ -214,6 +216,7 @@ defmodule Sequin.Consumers.SinkConsumer do
     |> validate_number(:batch_size, greater_than: 0)
     |> validate_number(:batch_size, less_than_or_equal_to: 1_000)
     |> validate_number(:batch_timeout_ms, greater_than: 0)
+    |> validate_number(:batcher_concurrency, greater_than: 0, less_than_or_equal_to: 100)
     |> validate_number(:max_memory_mb, greater_than_or_equal_to: 128)
     |> validate_number(:partition_count, greater_than_or_equal_to: 1)
     |> validate_number(:max_retry_count, greater_than: 0)

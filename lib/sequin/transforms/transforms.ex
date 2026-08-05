@@ -193,6 +193,9 @@ defmodule Sequin.Transforms do
         actions: consumer.actions,
         destination: to_external(sink, show_sensitive),
         batch_size: consumer.batch_size,
+        batch_timeout_ms: consumer.batch_timeout_ms,
+        batcher_concurrency: consumer.batcher_concurrency,
+        max_memory_mb: consumer.max_memory_mb,
         filter: if(consumer.filter, do: consumer.filter.name, else: "none"),
         transform: if(consumer.transform, do: consumer.transform.name, else: "none"),
         routing: if(consumer.routing, do: consumer.routing.name, else: "none"),
@@ -887,6 +890,33 @@ defmodule Sequin.Transforms do
 
             _ ->
               {:halt, {:error, Error.validation(summary: "batch_size must be a positive integer <= 1000")}}
+          end
+
+        "batch_timeout_ms" ->
+          case value do
+            ms when is_integer(ms) and ms > 0 ->
+              {:cont, {:ok, Map.put(acc, :batch_timeout_ms, ms)}}
+
+            _ ->
+              {:halt, {:error, Error.validation(summary: "batch_timeout_ms must be a positive integer")}}
+          end
+
+        "batcher_concurrency" ->
+          case value do
+            n when is_integer(n) and n > 0 and n <= 100 ->
+              {:cont, {:ok, Map.put(acc, :batcher_concurrency, n)}}
+
+            _ ->
+              {:halt, {:error, Error.validation(summary: "batcher_concurrency must be a positive integer <= 100")}}
+          end
+
+        "max_memory_mb" ->
+          case value do
+            mb when is_integer(mb) and mb >= 128 ->
+              {:cont, {:ok, Map.put(acc, :max_memory_mb, mb)}}
+
+            _ ->
+              {:halt, {:error, Error.validation(summary: "max_memory_mb must be an integer >= 128")}}
           end
 
         "actions" ->

@@ -103,6 +103,8 @@
     };
     groupColumnAttnums: number[];
     batchSize: number;
+    batchTimeoutMs: number | null;
+    batcherConcurrency: number | null;
     transform: string;
     filterId: string;
     routingId: string;
@@ -130,6 +132,12 @@
     },
     groupColumnAttnums: consumer.group_column_attnums || [],
     batchSize: Number(consumer.batch_size) || 1,
+    batchTimeoutMs: consumer.batch_timeout_ms
+      ? Number(consumer.batch_timeout_ms)
+      : null,
+    batcherConcurrency: consumer.batcher_concurrency
+      ? Number(consumer.batcher_concurrency)
+      : null,
     transform: consumer.transform_id || "none",
     timestampFormat: consumer.timestamp_format || "iso8601",
     routingId: consumer.routing_id || "none",
@@ -832,7 +840,10 @@
               <AccordionTrigger>Advanced configuration</AccordionTrigger>
               <AccordionContent>
                 <div class="space-y-4 pt-4">
-                  {#if consumer.type !== "http_push"}
+                  <!-- Meilisearch uses the destination "Batch size (documents per request)"
+                       field instead of this consumer-level batch_size, so hide it there to
+                       avoid two conflicting batch-size controls. -->
+                  {#if consumer.type !== "http_push" && consumer.type !== "meilisearch"}
                     <div class="space-y-2">
                       <Label for="batch-size">Batch size</Label>
                       <Tooltip.Root openDelay={200}>
@@ -861,6 +872,102 @@
                       {#if errors.consumer?.batchSize}
                         <p class="text-destructive text-sm">
                           {errors.consumer.batchSize}
+                        </p>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  {#if consumer.type === "meilisearch"}
+                    <div class="space-y-2">
+                      <Label for="max-memory-mb">Max memory (MB)</Label>
+                      <Tooltip.Root openDelay={200}>
+                        <Tooltip.Trigger>
+                          <Info class="h-4 w-4 text-gray-400 cursor-help" />
+                        </Tooltip.Trigger>
+                        <Tooltip.Content class="p-4 max-w-xs">
+                          <div class="text-sm text-muted-foreground font-normal">
+                            Maximum in-memory buffer for this sink's messages. Higher
+                            values give backfills room to make progress against slow
+                            async destinations like Meilisearch (the default 128 MB
+                            can deadlock large backfills). Minimum 128.
+                          </div>
+                        </Tooltip.Content>
+                      </Tooltip.Root>
+                      <div class="flex items-center space-x-2">
+                        <Input
+                          id="max-memory-mb"
+                          type="number"
+                          bind:value={form.maxMemoryMb}
+                          min="128"
+                          placeholder="128"
+                        />
+                      </div>
+                      {#if errors.consumer?.maxMemoryMb}
+                        <p class="text-destructive text-sm">
+                          {errors.consumer.maxMemoryMb}
+                        </p>
+                      {/if}
+                    </div>
+
+                    <div class="space-y-2">
+                      <Label for="batch-timeout-ms">Batch timeout (ms)</Label>
+                      <Tooltip.Root openDelay={200}>
+                        <Tooltip.Trigger>
+                          <Info class="h-4 w-4 text-gray-400 cursor-help" />
+                        </Tooltip.Trigger>
+                        <Tooltip.Content class="p-4 max-w-xs">
+                          <div class="text-sm text-muted-foreground font-normal">
+                            How long to wait for a batch to fill before sending it.
+                            Larger values let batches grow toward the batch size
+                            (better backfill throughput) at the cost of up to this
+                            much real-time delivery latency. Default 1000.
+                          </div>
+                        </Tooltip.Content>
+                      </Tooltip.Root>
+                      <div class="flex items-center space-x-2">
+                        <Input
+                          id="batch-timeout-ms"
+                          type="number"
+                          bind:value={form.batchTimeoutMs}
+                          min="1"
+                          placeholder="1000"
+                        />
+                      </div>
+                      {#if errors.consumer?.batchTimeoutMs}
+                        <p class="text-destructive text-sm">
+                          {errors.consumer.batchTimeoutMs}
+                        </p>
+                      {/if}
+                    </div>
+
+                    <div class="space-y-2">
+                      <Label for="batcher-concurrency">Batcher concurrency</Label>
+                      <Tooltip.Root openDelay={200}>
+                        <Tooltip.Trigger>
+                          <Info class="h-4 w-4 text-gray-400 cursor-help" />
+                        </Tooltip.Trigger>
+                        <Tooltip.Content class="p-4 max-w-xs">
+                          <div class="text-sm text-muted-foreground font-normal">
+                            Number of concurrent delivery workers. Meilisearch
+                            auto-batches concurrent requests into larger commits, so
+                            higher values raise throughput — but too high can flood
+                            its serial task queue. Range 1–100. Default 24.
+                          </div>
+                        </Tooltip.Content>
+                      </Tooltip.Root>
+                      <div class="flex items-center space-x-2">
+                        <Input
+                          id="batcher-concurrency"
+                          type="number"
+                          bind:value={form.batcherConcurrency}
+                          min="1"
+                          max="100"
+                          placeholder="24"
+                        />
+                      </div>
+                      {#if errors.consumer?.batcherConcurrency}
+                        <p class="text-destructive text-sm">
+                          {errors.consumer.batcherConcurrency}
                         </p>
                       {/if}
                     </div>
