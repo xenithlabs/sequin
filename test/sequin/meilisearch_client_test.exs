@@ -345,6 +345,34 @@ defmodule Sequin.Sinks.Meilisearch.ClientTest do
       assert_receive {:task_check, 1}, 2_000
     end
 
+    test "wait_for_task honors the deadline as wall-clock, including request latency" do
+      records = [SinkFactory.meilisearch_record()]
+
+      Req.Test.expect(Client, fn conn ->
+        assert conn.method == "POST"
+        Req.Test.json(conn, %{"taskUid" => 789})
+      end)
+
+      # Each poll is slow. If the budget only counted sleep backoff, the loop would keep
+      # polling long past task_wait_timeout_ms (1.5s in test) and blow the consumer's
+      # ack_wait_ms, which is the failure this deadline guards against.
+      Req.Test.stub(Client, fn conn ->
+        assert conn.request_path == "/tasks/789"
+        Process.sleep(500)
+        send_gzipped_response(conn, 200, %{"status" => "processing", "taskUid" => 789})
+      end)
+
+      started_at = System.monotonic_time(:millisecond)
+      assert {:error, error} = Client.import_documents(@sink, "test", records)
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+      assert error.message == "[meilisearch]: Task verification timed out"
+
+      # Deadline is 1.5s; allow slack for the in-flight poll, but well under the ~4s the
+      # sleep-only accounting would have taken.
+      assert elapsed_ms < 2_500, "wait_for_task ran #{elapsed_ms}ms, exceeding its deadline budget"
+    end
+
     test "wait_for_task handles task failure" do
       records = [SinkFactory.meilisearch_record()]
 

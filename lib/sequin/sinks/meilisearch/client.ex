@@ -35,14 +35,25 @@ defmodule Sequin.Sinks.Meilisearch.Client do
   end
 
   defp wait_for_task(%MeilisearchSink{} = sink, task_id) do
-    wait_for_task(sink, task_id, 0, 0)
+    # Deadline is wall-clock, not accumulated sleep time: each poll request can itself take up
+    # to receive_timeout, so counting only the backoff would let total time run well past the
+    # consumer's ack_wait_ms and trigger the very nack/redeliver loop this wait exists to avoid.
+    deadline = System.monotonic_time(:millisecond) + task_wait_timeout_ms()
+    wait_for_task(sink, task_id, deadline, 0)
   end
 
-  defp wait_for_task(%MeilisearchSink{} = sink, task_id, elapsed_ms, attempt) do
+  defp wait_for_task(%MeilisearchSink{} = sink, task_id, deadline, attempt) do
+    # Cap this request at whatever is left of the budget so one hung poll can't blow past it.
+    poll_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 1)
+
     req =
       sink
       |> base_request()
-      |> Req.merge(url: "/tasks/#{task_id}", retry: false)
+      |> Req.merge(
+        url: "/tasks/#{task_id}",
+        retry: false,
+        receive_timeout: min(to_timeout(second: sink.timeout_seconds), poll_timeout_ms)
+      )
 
     case Req.get(req) do
       {:ok, %{body: body}} ->
@@ -55,7 +66,7 @@ defmodule Sequin.Sinks.Meilisearch.Client do
             {:error, Error.service(service: :meilisearch, message: message, details: error)}
 
           %{"status" => status} when status in ["enqueued", "processing"] ->
-            maybe_poll_again(sink, task_id, elapsed_ms, attempt, status)
+            maybe_poll_again(sink, task_id, deadline, attempt, status)
 
           _ ->
             {:error, Error.service(service: :meilisearch, message: "Invalid response format")}
@@ -63,12 +74,14 @@ defmodule Sequin.Sinks.Meilisearch.Client do
 
       {:error, reason} ->
         # Transient transport error — keep polling within the deadline before giving up.
-        maybe_poll_again(sink, task_id, elapsed_ms, attempt, {:transport_error, reason})
+        maybe_poll_again(sink, task_id, deadline, attempt, {:transport_error, reason})
     end
   end
 
-  defp maybe_poll_again(sink, task_id, elapsed_ms, attempt, last) do
-    if elapsed_ms >= task_wait_timeout_ms() do
+  defp maybe_poll_again(sink, task_id, deadline, attempt, last) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    if remaining_ms <= 0 do
       case last do
         {:transport_error, reason} ->
           {:error, Error.service(service: :meilisearch, message: "Unknown error", details: reason)}
@@ -82,12 +95,16 @@ defmodule Sequin.Sinks.Meilisearch.Client do
            )}
       end
     else
-      delay = min(@task_poll_max_ms, trunc(@task_poll_base_ms * :math.pow(2, attempt)))
+      # Never sleep past the deadline — otherwise the final wait overshoots the budget.
+      delay =
+        @task_poll_max_ms
+        |> min(trunc(@task_poll_base_ms * :math.pow(2, attempt)))
+        |> min(remaining_ms)
 
       Logger.debug("[Meilisearch] Task #{task_id} not terminal (#{inspect(last)}), polling again in #{delay}ms")
 
       Process.sleep(delay)
-      wait_for_task(sink, task_id, elapsed_ms + delay, attempt + 1)
+      wait_for_task(sink, task_id, deadline, attempt + 1)
     end
   end
 
